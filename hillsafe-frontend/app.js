@@ -1,62 +1,256 @@
-const $ = (s, root=document) => root.querySelector(s);
-const $$ = (s, root=document) => [...root.querySelectorAll(s)];
+import { auth, db } from './firebase.js';
+
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  signOut
+} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
+
+import {
+  doc,
+  getDoc,
+  setDoc,
+  addDoc,
+  collection,
+  getDocs,
+  query,
+  orderBy,
+  serverTimestamp
+} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const STORAGE_KEY = 'hillsafe_demo_state_v1';
 const SEED_REPORTS = [
- {id:'demo-1',title:'Landslide / rockfall',type:'Landslide',location:'Near Banderdewa, NH-13',description:'Loose rocks and soil are reported near the road edge. Please proceed carefully and follow any official instructions.',severity:'High',status:'verified',source:'community',reporter:'Ananya C.',reporterId:'other-1',createdAt:Date.now()-1000*60*38,lat:27.105, lng:93.72,comments:[{name:'Megha (authorised)',text:'Thanks for the update. We are checking the current status.',time:'20 min ago'}],likes:8},
- {id:'demo-2',title:'Fallen trees',type:'Fallen trees',location:'Near Naharlagun bypass',description:'A fallen branch is reported close to the shoulder. The road appears passable based on this report.',severity:'Medium',status:'pending',source:'community',reporter:'Rohan D.',reporterId:'demo-user',createdAt:Date.now()-1000*60*94,lat:27.104,lng:93.68,comments:[],likes:3},
- {id:'demo-3',title:'Historical landslide area',type:'Historical risk',location:'Hill section north of Banderdewa',description:'Illustrative historical susceptibility marker. This is not a live incident or confirmation of current danger.',severity:'Medium',status:'risk',source:'historical',reporter:'HillSafe data layer',reporterId:'system',createdAt:Date.now()-1000*60*60*24*9,lat:27.118,lng:93.755,comments:[],likes:0},
- {id:'demo-4',title:'Road cleared',type:'Road blockage',location:'Road section near Itanagar',description:'Example of a resolved incident. The marker is hidden from the active hazard map, but the record remains in history.',severity:'Low',status:'resolved',source:'community',reporter:'Tashi N.',reporterId:'other-2',createdAt:Date.now()-1000*60*60*26,lat:27.09,lng:93.78,comments:[{name:'Authorised reviewer',text:'Road clearing confirmed in this demo.',time:'Yesterday'}],likes:6}
+    { id: 'demo-1', title: 'Landslide / rockfall', type: 'Landslide', location: 'Near Banderdewa, NH-13', description: 'Loose rocks and soil are reported near the road edge. Please proceed carefully and follow any official instructions.', severity: 'High', status: 'verified', source: 'community', reporter: 'Ananya C.', reporterId: 'other-1', createdAt: Date.now() - 1000 * 60 * 38, lat: 27.105, lng: 93.72, comments: [{ name: 'Megha (authorised)', text: 'Thanks for the update. We are checking the current status.', time: '20 min ago' }], likes: 8 },
+    { id: 'demo-2', title: 'Fallen trees', type: 'Fallen trees', location: 'Near Naharlagun bypass', description: 'A fallen branch is reported close to the shoulder. The road appears passable based on this report.', severity: 'Medium', status: 'pending', source: 'community', reporter: 'Rohan D.', reporterId: 'demo-user', createdAt: Date.now() - 1000 * 60 * 94, lat: 27.104, lng: 93.68, comments: [], likes: 3 },
+    { id: 'demo-3', title: 'Historical landslide area', type: 'Historical risk', location: 'Hill section north of Banderdewa', description: 'Illustrative historical susceptibility marker. This is not a live incident or confirmation of current danger.', severity: 'Medium', status: 'risk', source: 'historical', reporter: 'HillSafe data layer', reporterId: 'system', createdAt: Date.now() - 1000 * 60 * 60 * 24 * 9, lat: 27.118, lng: 93.755, comments: [], likes: 0 },
+    { id: 'demo-4', title: 'Road cleared', type: 'Road blockage', location: 'Road section near Itanagar', description: 'Example of a resolved incident. The marker is hidden from the active hazard map, but the record remains in history.', severity: 'Low', status: 'resolved', source: 'community', reporter: 'Tashi N.', reporterId: 'other-2', createdAt: Date.now() - 1000 * 60 * 60 * 26, lat: 27.09, lng: 93.78, comments: [{ name: 'Authorised reviewer', text: 'Road clearing confirmed in this demo.', time: 'Yesterday' }], likes: 6 }
 ];
 let state = loadState();
-let currentUser = null, map = null, markerLayer = null, routeLayer = null, currentFilter='all', pendingGeo=null, photoName='', routeSubmitted=false, selectedIncidentId=null;
-function loadState(){try{const s=JSON.parse(localStorage.getItem(STORAGE_KEY));return s&&s.reports? s:{reports:SEED_REPORTS,users:[],pendingSync:[]}}catch{return {reports:SEED_REPORTS,users:[],pendingSync:[]}}}
-function saveState(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state));}
-function esc(v=''){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function toast(message, type=''){const el=document.createElement('div');el.className='toast '+type;el.textContent=message;$('#toastRegion').append(el);setTimeout(()=>el.remove(),3500)}
-function niceTime(ts){const mins=Math.max(0,Math.floor((Date.now()-ts)/60000));if(mins<1)return 'Just now';if(mins<60)return `${mins} min ago`;if(mins<1440)return `${Math.floor(mins/60)} hr ago`;return new Date(ts).toLocaleDateString(undefined,{day:'numeric',month:'short'});}
-function statusLabel(status){return ({pending:'Awaiting review',verified:'Verified',resolved:'Resolved',risk:'Historical risk',cleared:'Resolved'})[status]||status}
-function statusClass(status){return status==='verified'?'verified':status==='resolved'?'resolved':status==='risk'?'risk':'pending'}
-function iconClass(r){if(r.status==='resolved')return 'green';if(r.status==='risk')return 'yellow';if(r.severity==='High')return 'red';if(r.status==='pending')return 'orange';return 'blue'}
-function symbol(r){return r.type==='Landslide'?'⚠':r.type==='Fallen trees'?'♧':r.status==='resolved'?'✓':r.status==='risk'?'⌁':'!'}
-function visibleActiveReports(){return state.reports.filter(r=>r.status!=='resolved')}
-function reportCard(r, mode='default'){const canEdit=r.reporterId===currentUser?.id;return `<article class="report-card" data-report-card="${esc(r.id)}"><div class="report-symbol ${iconClass(r)}">${symbol(r)}</div><div class="report-main"><div class="report-title-row"><strong>${esc(r.title||r.type)}</strong><span class="status-pill ${statusClass(r.status)}">${esc(statusLabel(r.status))}</span></div><p>${esc(r.location)} · ${esc(r.description)}</p><div class="report-meta"><span>♙ ${esc(r.reporter||'Traveller')}</span><span>◷ ${niceTime(r.createdAt)}</span><span>👍 ${r.likes||0} helpful</span></div></div><div class="report-actions">${mode==='my'&&canEdit?`<button class="small-action" data-action="edit" data-id="${esc(r.id)}">Edit</button><button class="small-action danger" data-action="delete" data-id="${esc(r.id)}">Delete</button>`:''}<button class="small-action" data-action="details" data-id="${esc(r.id)}">Details</button></div></article>`}
-function renderAll(){renderDashboard();renderReports();renderAdmin();updateCounts();}
-function renderDashboard(){$('#recentReports').innerHTML=visibleActiveReports().slice(0,3).map(r=>reportCard(r)).join('')||emptyMini();$('#activeReportStat').textContent=visibleActiveReports().filter(r=>r.status!=='risk').length;}
-function emptyMini(){return '<div class="content-card"><p class="muted">No active reports yet. Be the first to share an update.</p></div>'}
-function renderReports(){const mine=state.reports.filter(r=>r.reporterId===currentUser?.id);$('#filterAllCount').textContent=mine.length;$('#myReportCount').textContent=mine.filter(r=>r.status!=='resolved').length;const filtered=mine.filter(r=>currentFilter==='all'||(currentFilter==='pending'&&r.status==='pending')||(currentFilter==='verified'&&r.status==='verified')||(currentFilter==='resolved'&&r.status==='resolved'));$('#myReportsList').innerHTML=filtered.map(r=>reportCard(r,'my')).join('');$('#myReportsEmpty').classList.toggle('hidden',mine.length!==0);$('#myReportsList').classList.toggle('hidden',mine.length===0);$('#routeReports').innerHTML=visibleActiveReports().map(r=>reportCard(r)).join('')||emptyMini();}
-function renderAdmin(){const all=state.reports.filter(r=>r.status!=='risk');$('#adminReportsList').innerHTML=all.map(r=>`${reportCard(r)}<div class="admin-action-row" style="display:flex;gap:8px;justify-content:flex-end;margin:-3px 4px 12px">${r.status!=='verified'?`<button class="small-action" data-action="verify" data-id="${esc(r.id)}">Mark verified</button>`:''}${r.status!=='resolved'?`<button class="small-action" data-action="resolve" data-id="${esc(r.id)}">Mark resolved</button>`:''}<button class="small-action" data-action="details" data-id="${esc(r.id)}">Open discussion</button></div>`).join('')||emptyMini();}
-function updateCounts(){$('#pendingCount').textContent=state.pendingSync.length;$('#myReportCount').textContent=state.reports.filter(r=>r.reporterId===currentUser?.id&&r.status!=='resolved').length;}
-function setAuthTab(tab){$$('[data-auth-tab]').forEach(b=>b.classList.toggle('active',b.dataset.authTab===tab));$('#loginForm').classList.toggle('hidden',tab!=='login');$('#signupForm').classList.toggle('hidden',tab!=='signup');}
-function startSession(user){currentUser=user;$('#authScreen').classList.add('hidden');$('#appShell').classList.remove('hidden');$('#userName').textContent=user.name;$('#userEmail').textContent=user.email;$('#userAvatar').textContent=(user.name||'T').charAt(0).toUpperCase();$('#topAvatar').textContent=(user.name||'T').charAt(0).toUpperCase();$('#welcomeName').textContent=(user.name||'Traveller').split(' ')[0];$('#adminNav').classList.toggle('hidden',!user.authorised);renderAll();showView('dashboard');}
-function logout(){currentUser=null;$('#appShell').classList.add('hidden');$('#authScreen').classList.remove('hidden');setAuthTab('login');toast('You have logged out.');}
-function showView(view){const titles={dashboard:'Dashboard',travel:'Travel',report:'Report a problem',myreports:'My reports',offline:'Offline access',admin:'Review reports'};if(view==='admin'&&!currentUser?.authorised){toast('This area is for authorised reviewers only.','error');view='dashboard'};$$('.page-view').forEach(s=>s.classList.add('hidden'));const target=$(`#${view}View`);if(target)target.classList.remove('hidden');$$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===view));$('#pageCrumb').textContent=titles[view]||'Dashboard';$('#sidebar').classList.remove('open');if(view==='travel'){setTimeout(()=>initMap(),100);if(map)setTimeout(()=>map.invalidateSize(),150)}if(view==='report'){$('#incidentLocation').focus({preventScroll:true})}window.scrollTo({top:0,behavior:'smooth'});}
-function initMap(){if(map){map.invalidateSize();return}if(!window.L){$('#routeMap').innerHTML='<div style="padding:30px">Map library could not load. Check your internet connection.</div>';return}map=L.map('routeMap',{zoomControl:false}).setView([27.105,93.72],11);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);L.control.zoom({position:'topright'}).addTo(map);markerLayer=L.layerGroup().addTo(map);routeLayer=L.layerGroup().addTo(map);drawMap();}
-function drawMap(){if(!map||!markerLayer)return;markerLayer.clearLayers();routeLayer.clearLayers();const active=visibleActiveReports();active.forEach(r=>{if(!r.lat||!r.lng)return;const color=r.status==='risk'?'#d9b72d':r.status==='pending'?'#e99a2c':r.severity==='High'?'#d84c49':r.source==='system'?'#397bd8':'#218b63';const marker=L.circleMarker([r.lat,r.lng],{radius:r.status==='verified'?9:8,color:'#fff',weight:2,fillColor:color,fillOpacity:.98}).addTo(markerLayer);marker.bindPopup(`<div class="map-popup"><strong>${esc(r.title||r.type)}</strong><p>${esc(r.location)}</p><span>${esc(statusLabel(r.status))}</span><p style="margin-top:7px">${esc(r.description.slice(0,115))}${r.description.length>115?'…':''}</p><button onclick="window.openIncident('${esc(r.id)}')" style="background:#116b52;color:white;border:0;padding:7px 10px;border-radius:6px;font-size:10px">View report</button></div>`);});if(routeSubmitted){const pts=[[27.095,93.64],[27.102,93.67],[27.104,93.69],[27.109,93.705],[27.105,93.72],[27.112,93.735],[27.12,93.75],[27.112,93.765],[27.1,93.78]];L.polyline(pts,{color:'#fff',weight:9,opacity:.95,lineCap:'round'}).addTo(routeLayer);L.polyline(pts,{color:'#1f9b67',weight:5,opacity:.95,lineCap:'round'}).addTo(routeLayer);const start=L.circleMarker(pts[0],{radius:7,color:'#fff',weight:2,fillColor:'#2369cf',fillOpacity:1}).addTo(routeLayer);start.bindTooltip('Start');const end=L.circleMarker(pts[pts.length-1],{radius:7,color:'#fff',weight:2,fillColor:'#116b52',fillOpacity:1}).addTo(routeLayer);end.bindTooltip('Destination');map.fitBounds(L.latLngBounds(pts).pad(.15));}else{map.setView([27.105,93.72],11)} }
-function showToastForOffline(){const online=navigator.onLine;$('#connectionText').textContent=online?'Online':'Offline';$('#offlineStatusText').textContent=online?'Online':'Offline';$('#offlineHeading').textContent=online?'You’re currently online':'You’re offline';$('#offlineDescription').textContent=online?'You can browse the available prototype data. Load a route before travelling to keep useful information available.':'You can review saved information and create a report that will be marked pending until sync is available.';$('.connection-pill').classList.toggle('offline-pill',!online);}
-function createReport(data){const r={id:'local-'+Date.now(),...data,reporter:currentUser.name,reporterId:currentUser.id,createdAt:Date.now(),status:navigator.onLine?'pending':'pending',source:'community',comments:[],likes:0};state.reports.unshift(r);if(!navigator.onLine)state.pendingSync.push(r.id);saveState();renderAll();if(map)drawMap();return r;}
-function deleteReport(id){const r=state.reports.find(x=>x.id===id);if(!r||r.reporterId!==currentUser.id){toast('You can delete only your own reports.','error');return}if(!confirm('Delete your report from the active community view? Independent risk warnings and other reports will remain.'))return;state.reports=state.reports.filter(x=>x.id!==id);state.pendingSync=state.pendingSync.filter(x=>x!==id);saveState();renderAll();if(map)drawMap();toast('Your report was removed from the active report list.');}
-function updateReport(id,status){if(!currentUser?.authorised){toast('Only an authorised reviewer can change report status.','error');return}const r=state.reports.find(x=>x.id===id);if(!r)return;r.status=status;r.updatedAt=Date.now();r.updateNote=status==='resolved'?'Marked resolved by an authorised reviewer.':'';saveState();renderAll();if(map)drawMap();toast(status==='resolved'?'Incident marked resolved. Its active hazard marker has been removed.':'Report marked verified.');}
-function openIncident(id){const r=state.reports.find(x=>x.id===id);if(!r)return;selectedIncidentId=id;const comments=r.comments||[];$('#modalContent').innerHTML=`<div class="report-title-row"><span class="report-symbol ${iconClass(r)}">${symbol(r)}</span><div><h2>${esc(r.title||r.type)}</h2><span class="status-pill ${statusClass(r.status)}">${esc(statusLabel(r.status))}</span></div></div><p class="modal-subtitle">${esc(r.location)} · Reported by ${esc(r.reporter)} · ${niceTime(r.createdAt)}</p><div class="modal-description">${esc(r.description)}</div><div class="report-meta" style="margin-top:12px"><span>Severity: ${esc(r.severity)}</span><span>👍 ${r.likes||0} helpful</span><span>${r.comments?.length||0} comments</span></div><div class="modal-actions"><button class="btn btn-outline" data-action="like" data-id="${esc(r.id)}">👍 Helpful</button>${r.reporterId===currentUser.id?`<button class="btn btn-outline" data-action="delete" data-id="${esc(r.id)}">Delete my report</button>`:''}${currentUser.authorised&&r.status!=='resolved'?`<button class="btn btn-primary" data-action="resolve" data-id="${esc(r.id)}">Mark resolved</button>`:''}${currentUser.authorised&&r.status!=='verified'?`<button class="btn btn-outline" data-action="verify" data-id="${esc(r.id)}">Mark verified</button>`:''}</div><h3 style="margin-top:23px;margin-bottom:8px">Community discussion</h3><div class="comment-list">${comments.length?comments.map(c=>`<div class="comment-item"><strong>${esc(c.name)}</strong><small>${esc(c.time||'Just now')}</small><p>${esc(c.text)}</p></div>`).join(''):'<p class="muted" style="font-size:11px">No comments yet. Share a useful update.</p>'}</div><form id="commentForm" class="comment-form"><input id="commentInput" required maxlength="300" placeholder="Add a road-condition update…"><button type="submit">Post</button></form><p class="field-help" style="margin-top:8px">Signed in as ${esc(currentUser.name)}. Only logged-in users can comment in this prototype.</p>`;$('#incidentModal').classList.remove('hidden');$('#commentForm').addEventListener('submit',e=>{e.preventDefault();const text=$('#commentInput').value.trim();if(!text)return;r.comments=r.comments||[];r.comments.push({name:currentUser.name+(currentUser.authorised?' (authorised)':''),text,time:'Just now'});saveState();renderAll();openIncident(id);toast('Comment added.');});}
-window.openIncident=openIncident;
-function editReport(id){const r=state.reports.find(x=>x.id===id);if(!r||r.reporterId!==currentUser.id)return;showView('report');$('#incidentType').value=r.type;$('#incidentSeverity').value=r.severity;$('#incidentLocation').value=r.location;$('#incidentDescription').value=r.description;$('#reportForm').dataset.editId=id;$('#reportForm button[type="submit"]').innerHTML='Save changes <span>→</span>';toast('Edit your report, then save changes.');}
-function doAction(action,id){if(action==='details'){openIncident(id);return}if(action==='delete'){deleteReport(id);if(!$('#incidentModal').classList.contains('hidden'))$('#incidentModal').classList.add('hidden');return}if(action==='verify'){updateReport(id,'verified');if(!$('#incidentModal').classList.contains('hidden'))openIncident(id);return}if(action==='resolve'){updateReport(id,'resolved');if(!$('#incidentModal').classList.contains('hidden'))openIncident(id);return}if(action==='like'){const r=state.reports.find(x=>x.id===id);if(r){r.likes=(r.likes||0)+1;saveState();renderAll();openIncident(id);toast('Marked helpful.')}return}if(action==='edit'){editReport(id);return}}
-// Authentication is intentionally a local prototype; replace with Firebase Authentication before deployment.
-$('#loginForm').addEventListener('submit',e=>{e.preventDefault();const email=$('#loginEmail').value.trim().toLowerCase();const pass=$('#loginPassword').value;if(email==='traveller@hillsafe.demo'&&pass==='hillsafe123'){startSession({id:'demo-user',name:'Rohan Das',email,authorised:false});return}const u=state.users.find(x=>x.email.toLowerCase()===email&&x.password===pass);if(!u){toast('Account not found. Use the demo login or create an account.','error');return}startSession({...u,authorised:false});});
-$('#signupForm').addEventListener('submit',e=>{e.preventDefault();const name=$('#signupName').value.trim(),email=$('#signupEmail').value.trim().toLowerCase(),password=$('#signupPassword').value;if(state.users.some(u=>u.email.toLowerCase()===email)){toast('An account with this email already exists.','error');return}const user={id:'user-'+Date.now(),name,email,password,authorised:false};state.users.push(user);saveState();startSession(user);toast('Welcome to HillSafe. Your local demo account is ready.');});
-$$('[data-auth-tab]').forEach(b=>b.addEventListener('click',()=>setAuthTab(b.dataset.authTab)));
-$('#logoutButton').addEventListener('click',logout);$('#profileButton').addEventListener('click',()=>toast('Profile settings can be added in the next frontend step.'));
-$$('[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));$$('[data-go]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.go)));
-$('#mobileMenu').addEventListener('click',()=>$('#sidebar').classList.toggle('open'));
-$('#routeForm').addEventListener('submit',e=>{e.preventDefault();routeSubmitted=true;$('#routeResult').classList.remove('hidden');$('#mapSubtitle').textContent=`${$('#routeStart').value} → ${$('#routeEnd').value} · demo route preview`;$('h2', $('#routeResult')).textContent='Use caution';const n=visibleActiveReports().filter(r=>r.status!=='risk').length;$('#routeHazardCount').textContent=n;initMap();drawMap();toast('Route preview updated. Road data shown are illustrative, not live conditions.');});
-$('#swapRoute').addEventListener('click',()=>{const a=$('#routeStart'),b=$('#routeEnd'),v=a.value;a.value=b.value;b.value=v});$('#fitMap').addEventListener('click',()=>{if(map){if(routeSubmitted)drawMap();else map.setView([27.105,93.72],11)}});
-$('#reportForm').addEventListener('submit',e=>{e.preventDefault();const editId=e.currentTarget.dataset.editId;const data={title:$('#incidentType').value==='Landslide'?'Landslide / rockfall':$('#incidentType').value,type:$('#incidentType').value,location:$('#incidentLocation').value.trim(),description:$('#incidentDescription').value.trim(),severity:$('#incidentSeverity').value,lat:pendingGeo?.lat||27.105+(Math.random()-.5)*.035,lng:pendingGeo?.lng||93.72+(Math.random()-.5)*.05,photoName};if(editId){const r=state.reports.find(x=>x.id===editId);if(r&&r.reporterId===currentUser.id){Object.assign(r,data,{updatedAt:Date.now()});delete e.currentTarget.dataset.editId;$('#reportForm button[type="submit"]').innerHTML='Submit report <span>→</span>';toast('Report updated.');}}else{createReport(data);toast(navigator.onLine?'Report saved to this browser prototype.':'Report saved locally and marked pending sync.');}e.currentTarget.reset();pendingGeo=null;photoName='';$('#locationStatus').textContent='Optional · browser permission required';$('#photoPreview').classList.add('hidden');renderAll();if(map)drawMap();showView('myreports');});
-$('#useLocation').addEventListener('click',()=>{if(!navigator.geolocation){toast('Location is not available in this browser.','error');return}$('#locationStatus').textContent='Requesting permission…';navigator.geolocation.getCurrentPosition(pos=>{pendingGeo={lat:pos.coords.latitude,lng:pos.coords.longitude};$('#incidentLocation').value=`My current location (${pendingGeo.lat.toFixed(5)}, ${pendingGeo.lng.toFixed(5)})`;$('#locationStatus').textContent='Location captured for this report';toast('Location added.');},()=>{$('#locationStatus').textContent='Could not access location. You can enter it manually.';toast('Location permission was not granted.','error');},{enableHighAccuracy:true,timeout:8000});});
-$('#incidentPhoto').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;photoName=f.name;$('#photoPreview').textContent=`Selected photo: ${f.name} (prototype stores the filename only)`;$('#photoPreview').classList.remove('hidden')});
-$$('[data-filter]').forEach(b=>b.addEventListener('click',()=>{currentFilter=b.dataset.filter;$$('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));renderReports()}));
-document.addEventListener('click',e=>{const b=e.target.closest('[data-action]');if(b)doAction(b.dataset.action,b.dataset.id)});
-$('#closeModal').addEventListener('click',()=>$('#incidentModal').classList.add('hidden'));$('#incidentModal').addEventListener('click',e=>{if(e.target===$('#incidentModal'))$('#incidentModal').classList.add('hidden')});
-$('#simulateOnline').addEventListener('click',()=>{if(!navigator.onLine){toast('Your browser is still offline. Reconnect to the internet first.','error');return}const n=state.pendingSync.length;state.pendingSync=[];saveState();updateCounts();toast(n?`${n} pending report(s) marked ready to sync in this prototype.`:'No pending reports to sync.');});
-window.addEventListener('online',()=>{showToastForOffline();toast('Connection restored. Pending items can now sync when Firebase is connected.')});window.addEventListener('offline',()=>{showToastForOffline();toast('You are offline. New reports will be marked pending sync.','error')});
+let currentUser = null, map = null, markerLayer = null, routeLayer = null, currentFilter = 'all', pendingGeo = null, photoName = '', routeSubmitted = false, selectedIncidentId = null;
+function loadState() { try { const s = JSON.parse(localStorage.getItem(STORAGE_KEY)); return s && s.reports ? s : { reports: SEED_REPORTS, users: [], pendingSync: [] } } catch { return { reports: SEED_REPORTS, users: [], pendingSync: [] } } }
+function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function esc(v = '') { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function toast(message, type = '') { const el = document.createElement('div'); el.className = 'toast ' + type; el.textContent = message; $('#toastRegion').append(el); setTimeout(() => el.remove(), 3500) }
+function niceTime(ts) { const mins = Math.max(0, Math.floor((Date.now() - ts) / 60000)); if (mins < 1) return 'Just now'; if (mins < 60) return `${mins} min ago`; if (mins < 1440) return `${Math.floor(mins / 60)} hr ago`; return new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
+function statusLabel(status) { return ({ pending: 'Awaiting review', verified: 'Verified', resolved: 'Resolved', risk: 'Historical risk', cleared: 'Resolved' })[status] || status }
+function statusClass(status) { return status === 'verified' ? 'verified' : status === 'resolved' ? 'resolved' : status === 'risk' ? 'risk' : 'pending' }
+function iconClass(r) { if (r.status === 'resolved') return 'green'; if (r.status === 'risk') return 'yellow'; if (r.severity === 'High') return 'red'; if (r.status === 'pending') return 'orange'; return 'blue' }
+function symbol(r) { return r.type === 'Landslide' ? '⚠' : r.type === 'Fallen trees' ? '♧' : r.status === 'resolved' ? '✓' : r.status === 'risk' ? '⌁' : '!' }
+function visibleActiveReports() { return state.reports.filter(r => r.status !== 'resolved') }
+function reportCard(r, mode = 'default') { const canEdit = r.reporterId === currentUser?.id; return `<article class="report-card" data-report-card="${esc(r.id)}"><div class="report-symbol ${iconClass(r)}">${symbol(r)}</div><div class="report-main"><div class="report-title-row"><strong>${esc(r.title || r.type)}</strong><span class="status-pill ${statusClass(r.status)}">${esc(statusLabel(r.status))}</span></div><p>${esc(r.location)} · ${esc(r.description)}</p><div class="report-meta"><span>♙ ${esc(r.reporter || 'Traveller')}</span><span>◷ ${niceTime(r.createdAt)}</span><span>👍 ${r.likes || 0} helpful</span></div></div><div class="report-actions">${mode === 'my' && canEdit ? `<button class="small-action" data-action="edit" data-id="${esc(r.id)}">Edit</button><button class="small-action danger" data-action="delete" data-id="${esc(r.id)}">Delete</button>` : ''}<button class="small-action" data-action="details" data-id="${esc(r.id)}">Details</button></div></article>` }
+function renderAll() { renderDashboard(); renderReports(); renderAdmin(); updateCounts(); }
+function renderDashboard() { $('#recentReports').innerHTML = visibleActiveReports().slice(0, 3).map(r => reportCard(r)).join('') || emptyMini(); $('#activeReportStat').textContent = visibleActiveReports().filter(r => r.status !== 'risk').length; }
+function emptyMini() { return '<div class="content-card"><p class="muted">No active reports yet. Be the first to share an update.</p></div>' }
+function renderReports() { const mine = state.reports.filter(r => r.reporterId === currentUser?.id); $('#filterAllCount').textContent = mine.length; $('#myReportCount').textContent = mine.filter(r => r.status !== 'resolved').length; const filtered = mine.filter(r => currentFilter === 'all' || (currentFilter === 'pending' && r.status === 'pending') || (currentFilter === 'verified' && r.status === 'verified') || (currentFilter === 'resolved' && r.status === 'resolved')); $('#myReportsList').innerHTML = filtered.map(r => reportCard(r, 'my')).join(''); $('#myReportsEmpty').classList.toggle('hidden', mine.length !== 0); $('#myReportsList').classList.toggle('hidden', mine.length === 0); $('#routeReports').innerHTML = visibleActiveReports().map(r => reportCard(r)).join('') || emptyMini(); }
+function renderAdmin() { const all = state.reports.filter(r => r.status !== 'risk'); $('#adminReportsList').innerHTML = all.map(r => `${reportCard(r)}<div class="admin-action-row" style="display:flex;gap:8px;justify-content:flex-end;margin:-3px 4px 12px">${r.status !== 'verified' ? `<button class="small-action" data-action="verify" data-id="${esc(r.id)}">Mark verified</button>` : ''}${r.status !== 'resolved' ? `<button class="small-action" data-action="resolve" data-id="${esc(r.id)}">Mark resolved</button>` : ''}<button class="small-action" data-action="details" data-id="${esc(r.id)}">Open discussion</button></div>`).join('') || emptyMini(); }
+function updateCounts() { $('#pendingCount').textContent = state.pendingSync.length; $('#myReportCount').textContent = state.reports.filter(r => r.reporterId === currentUser?.id && r.status !== 'resolved').length; }
+function setAuthTab(tab) { $$('[data-auth-tab]').forEach(b => b.classList.toggle('active', b.dataset.authTab === tab)); $('#loginForm').classList.toggle('hidden', tab !== 'login'); $('#signupForm').classList.toggle('hidden', tab !== 'signup'); }
+function startSession(user) { currentUser = user; $('#authScreen').classList.add('hidden'); $('#appShell').classList.remove('hidden'); $('#userName').textContent = user.name; $('#userEmail').textContent = user.email; $('#userAvatar').textContent = (user.name || 'T').charAt(0).toUpperCase(); $('#topAvatar').textContent = (user.name || 'T').charAt(0).toUpperCase(); $('#welcomeName').textContent = (user.name || 'Traveller').split(' ')[0]; $('#adminNav').classList.toggle('hidden', !user.authorised); renderAll(); showView('dashboard'); }
+async function logout() {
+  try {
+    await signOut(auth);
+
+    currentUser = null;
+
+    $('#appShell').classList.add('hidden');
+    $('#authScreen').classList.remove('hidden');
+
+    setAuthTab('login');
+
+    toast('You have logged out.');
+  } catch (error) {
+    console.error('Logout error:', error);
+    toast('Could not log out. Please try again.', 'error');
+  }
+}
+function showView(view) { const titles = { dashboard: 'Dashboard', travel: 'Travel', report: 'Report a problem', myreports: 'My reports', offline: 'Offline access', admin: 'Review reports' }; if (view === 'admin' && !currentUser?.authorised) { toast('This area is for authorised reviewers only.', 'error'); view = 'dashboard' }; $$('.page-view').forEach(s => s.classList.add('hidden')); const target = $(`#${view}View`); if (target) target.classList.remove('hidden'); $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view)); $('#pageCrumb').textContent = titles[view] || 'Dashboard'; $('#sidebar').classList.remove('open'); if (view === 'travel') { setTimeout(() => initMap(), 100); if (map) setTimeout(() => map.invalidateSize(), 150) } if (view === 'report') { $('#incidentLocation').focus({ preventScroll: true }) } window.scrollTo({ top: 0, behavior: 'smooth' }); }
+function initMap() { if (map) { map.invalidateSize(); return } if (!window.L) { $('#routeMap').innerHTML = '<div style="padding:30px">Map library could not load. Check your internet connection.</div>'; return } map = L.map('routeMap', { zoomControl: false }).setView([27.105, 93.72], 11); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map); L.control.zoom({ position: 'topright' }).addTo(map); markerLayer = L.layerGroup().addTo(map); routeLayer = L.layerGroup().addTo(map); drawMap(); }
+function drawMap() { if (!map || !markerLayer) return; markerLayer.clearLayers(); routeLayer.clearLayers(); const active = visibleActiveReports(); active.forEach(r => { if (!r.lat || !r.lng) return; const color = r.status === 'risk' ? '#d9b72d' : r.status === 'pending' ? '#e99a2c' : r.severity === 'High' ? '#d84c49' : r.source === 'system' ? '#397bd8' : '#218b63'; const marker = L.circleMarker([r.lat, r.lng], { radius: r.status === 'verified' ? 9 : 8, color: '#fff', weight: 2, fillColor: color, fillOpacity: .98 }).addTo(markerLayer); marker.bindPopup(`<div class="map-popup"><strong>${esc(r.title || r.type)}</strong><p>${esc(r.location)}</p><span>${esc(statusLabel(r.status))}</span><p style="margin-top:7px">${esc(r.description.slice(0, 115))}${r.description.length > 115 ? '…' : ''}</p><button onclick="window.openIncident('${esc(r.id)}')" style="background:#116b52;color:white;border:0;padding:7px 10px;border-radius:6px;font-size:10px">View report</button></div>`); }); if (routeSubmitted) { const pts = [[27.095, 93.64], [27.102, 93.67], [27.104, 93.69], [27.109, 93.705], [27.105, 93.72], [27.112, 93.735], [27.12, 93.75], [27.112, 93.765], [27.1, 93.78]]; L.polyline(pts, { color: '#fff', weight: 9, opacity: .95, lineCap: 'round' }).addTo(routeLayer); L.polyline(pts, { color: '#1f9b67', weight: 5, opacity: .95, lineCap: 'round' }).addTo(routeLayer); const start = L.circleMarker(pts[0], { radius: 7, color: '#fff', weight: 2, fillColor: '#2369cf', fillOpacity: 1 }).addTo(routeLayer); start.bindTooltip('Start'); const end = L.circleMarker(pts[pts.length - 1], { radius: 7, color: '#fff', weight: 2, fillColor: '#116b52', fillOpacity: 1 }).addTo(routeLayer); end.bindTooltip('Destination'); map.fitBounds(L.latLngBounds(pts).pad(.15)); } else { map.setView([27.105, 93.72], 11) } }
+function showToastForOffline() { const online = navigator.onLine; $('#connectionText').textContent = online ? 'Online' : 'Offline'; $('#offlineStatusText').textContent = online ? 'Online' : 'Offline'; $('#offlineHeading').textContent = online ? 'You’re currently online' : 'You’re offline'; $('#offlineDescription').textContent = online ? 'You can browse the available prototype data. Load a route before travelling to keep useful information available.' : 'You can review saved information and create a report that will be marked pending until sync is available.'; $('.connection-pill').classList.toggle('offline-pill', !online); }
+async function createReport(data) {
+  if (!currentUser) {
+    toast('Please log in to submit a report.', 'error');
+    return null;
+  }
+
+  const report = {
+    ...data,
+    reporter: currentUser.name,
+    reporterId: currentUser.id,
+    userId: currentUser.id,
+    status: 'pending',
+    source: 'community',
+    comments: [],
+    likes: 0,
+    createdAt: Date.now()
+  };
+
+  try {
+    // Save the report in Firebase Firestore
+    const reportRef = await addDoc(collection(db, 'reports'), {
+      ...report,
+      createdAt: serverTimestamp()
+    });
+
+    // Keep the Firebase document ID
+    const savedReport = {
+      ...report,
+      id: reportRef.id
+    };
+
+    // Update the existing application state
+    state.reports.unshift(savedReport);
+    saveState();
+    renderAll();
+
+    if (map) drawMap();
+
+    toast('Report submitted successfully!', 'success');
+
+    return savedReport;
+  } catch (error) {
+    console.error('Firebase report submission error:', error);
+    toast('Could not submit the report. Please try again.', 'error');
+    return null;
+  }
+}
+function deleteReport(id) { const r = state.reports.find(x => x.id === id); if (!r || r.reporterId !== currentUser.id) { toast('You can delete only your own reports.', 'error'); return } if (!confirm('Delete your report from the active community view? Independent risk warnings and other reports will remain.')) return; state.reports = state.reports.filter(x => x.id !== id); state.pendingSync = state.pendingSync.filter(x => x !== id); saveState(); renderAll(); if (map) drawMap(); toast('Your report was removed from the active report list.'); }
+function updateReport(id, status) { if (!currentUser?.authorised) { toast('Only an authorised reviewer can change report status.', 'error'); return } const r = state.reports.find(x => x.id === id); if (!r) return; r.status = status; r.updatedAt = Date.now(); r.updateNote = status === 'resolved' ? 'Marked resolved by an authorised reviewer.' : ''; saveState(); renderAll(); if (map) drawMap(); toast(status === 'resolved' ? 'Incident marked resolved. Its active hazard marker has been removed.' : 'Report marked verified.'); }
+function openIncident(id) { const r = state.reports.find(x => x.id === id); if (!r) return; selectedIncidentId = id; const comments = r.comments || []; $('#modalContent').innerHTML = `<div class="report-title-row"><span class="report-symbol ${iconClass(r)}">${symbol(r)}</span><div><h2>${esc(r.title || r.type)}</h2><span class="status-pill ${statusClass(r.status)}">${esc(statusLabel(r.status))}</span></div></div><p class="modal-subtitle">${esc(r.location)} · Reported by ${esc(r.reporter)} · ${niceTime(r.createdAt)}</p><div class="modal-description">${esc(r.description)}</div><div class="report-meta" style="margin-top:12px"><span>Severity: ${esc(r.severity)}</span><span>👍 ${r.likes || 0} helpful</span><span>${r.comments?.length || 0} comments</span></div><div class="modal-actions"><button class="btn btn-outline" data-action="like" data-id="${esc(r.id)}">👍 Helpful</button>${r.reporterId === currentUser.id ? `<button class="btn btn-outline" data-action="delete" data-id="${esc(r.id)}">Delete my report</button>` : ''}${currentUser.authorised && r.status !== 'resolved' ? `<button class="btn btn-primary" data-action="resolve" data-id="${esc(r.id)}">Mark resolved</button>` : ''}${currentUser.authorised && r.status !== 'verified' ? `<button class="btn btn-outline" data-action="verify" data-id="${esc(r.id)}">Mark verified</button>` : ''}</div><h3 style="margin-top:23px;margin-bottom:8px">Community discussion</h3><div class="comment-list">${comments.length ? comments.map(c => `<div class="comment-item"><strong>${esc(c.name)}</strong><small>${esc(c.time || 'Just now')}</small><p>${esc(c.text)}</p></div>`).join('') : '<p class="muted" style="font-size:11px">No comments yet. Share a useful update.</p>'}</div><form id="commentForm" class="comment-form"><input id="commentInput" required maxlength="300" placeholder="Add a road-condition update…"><button type="submit">Post</button></form><p class="field-help" style="margin-top:8px">Signed in as ${esc(currentUser.name)}. Only logged-in users can comment in this prototype.</p>`; $('#incidentModal').classList.remove('hidden'); $('#commentForm').addEventListener('submit', e => { e.preventDefault(); const text = $('#commentInput').value.trim(); if (!text) return; r.comments = r.comments || []; r.comments.push({ name: currentUser.name + (currentUser.authorised ? ' (authorised)' : ''), text, time: 'Just now' }); saveState(); renderAll(); openIncident(id); toast('Comment added.'); }); }
+window.openIncident = openIncident;
+function editReport(id) { const r = state.reports.find(x => x.id === id); if (!r || r.reporterId !== currentUser.id) return; showView('report'); $('#incidentType').value = r.type; $('#incidentSeverity').value = r.severity; $('#incidentLocation').value = r.location; $('#incidentDescription').value = r.description; $('#reportForm').dataset.editId = id; $('#reportForm button[type="submit"]').innerHTML = 'Save changes <span>→</span>'; toast('Edit your report, then save changes.'); }
+function doAction(action, id) { if (action === 'details') { openIncident(id); return } if (action === 'delete') { deleteReport(id); if (!$('#incidentModal').classList.contains('hidden')) $('#incidentModal').classList.add('hidden'); return } if (action === 'verify') { updateReport(id, 'verified'); if (!$('#incidentModal').classList.contains('hidden')) openIncident(id); return } if (action === 'resolve') { updateReport(id, 'resolved'); if (!$('#incidentModal').classList.contains('hidden')) openIncident(id); return } if (action === 'like') { const r = state.reports.find(x => x.id === id); if (r) { r.likes = (r.likes || 0) + 1; saveState(); renderAll(); openIncident(id); toast('Marked helpful.') } return } if (action === 'edit') { editReport(id); return } }
+
+
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const email = $('#loginEmail').value.trim().toLowerCase();
+  const pass = $('#loginPassword').value;
+
+  try {
+    const credential = await signInWithEmailAndPassword(
+      auth,
+      email,
+      pass
+    );
+
+    const userId = credential.user.uid;
+
+    const userDoc = await getDoc(doc(db, 'users', userId));
+
+    if (!userDoc.exists()) {
+      toast(
+        'Your account profile was not found. Please contact support.',
+        'error'
+      );
+
+      return;
+    }
+
+    const profile = userDoc.data();
+
+    startSession({
+      id: userId,
+      name: profile.name || credential.user.displayName || 'Traveller',
+      email: credential.user.email,
+      authorised: false
+    });
+
+  } catch (error) {
+    console.error('Firebase login error:', error);
+
+    if (
+      error.code === 'auth/invalid-credential' ||
+      error.code === 'auth/user-not-found' ||
+      error.code === 'auth/wrong-password'
+    ) {
+      toast('Invalid email or password.', 'error');
+    } else if (error.code === 'auth/invalid-email') {
+      toast('Please enter a valid email address.', 'error');
+    } else {
+      toast('Login failed. Please try again.', 'error');
+    }
+  }
+});
+
+$('#signupForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const name = $('#signupName').value.trim();
+  const email = $('#signupEmail').value.trim().toLowerCase();
+  const password = $('#signupPassword').value;
+
+  if (!name || !email || !password) {
+    toast('Please fill in all required fields.', 'error');
+    return;
+  }
+
+  try {
+    // 1. Create the account in Firebase Authentication
+    const credential = await createUserWithEmailAndPassword(
+      auth,
+      email,
+      password
+    );
+
+    const firebaseUser = credential.user;
+
+    // 2. Save the user's name in their Firebase profile
+    await updateProfile(firebaseUser, {
+      displayName: name
+    });
+
+    // 3. Save the user's profile in Cloud Firestore
+    await setDoc(doc(db, 'users', firebaseUser.uid), {
+      name: name,
+      email: email,
+      role: 'traveller',
+      authorised: false,
+      createdAt: serverTimestamp()
+    });
+
+    // 4. Open the existing dashboard
+    startSession({
+      id: firebaseUser.uid,
+      name: name,
+      email: email,
+      authorised: false
+    });
+
+    toast('Welcome to HillSafe! Your account has been created.');
+
+  } catch (error) {
+    console.error('Firebase signup error:', error);
+
+    if (error.code === 'auth/email-already-in-use') {
+      toast('An account with this email already exists.', 'error');
+    } else if (error.code === 'auth/weak-password') {
+      toast('Your password is too weak. Use at least 6 characters.', 'error');
+    } else if (error.code === 'auth/invalid-email') {
+      toast('Please enter a valid email address.', 'error');
+    } else {
+      toast('Signup failed. Please try again.', 'error');
+    }
+  }
+});
+
+$$('[data-auth-tab]').forEach(b => b.addEventListener('click', () => setAuthTab(b.dataset.authTab)));
+$('#logoutButton').addEventListener('click', logout); $('#profileButton').addEventListener('click', () => toast('Profile settings can be added in the next frontend step.'));
+$$('[data-view]').forEach(b => b.addEventListener('click', () => showView(b.dataset.view))); $$('[data-go]').forEach(b => b.addEventListener('click', () => showView(b.dataset.go)));
+$('#mobileMenu').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+$('#routeForm').addEventListener('submit', e => { e.preventDefault(); routeSubmitted = true; $('#routeResult').classList.remove('hidden'); $('#mapSubtitle').textContent = `${$('#routeStart').value} → ${$('#routeEnd').value} · demo route preview`; $('h2', $('#routeResult')).textContent = 'Use caution'; const n = visibleActiveReports().filter(r => r.status !== 'risk').length; $('#routeHazardCount').textContent = n; initMap(); drawMap(); toast('Route preview updated. Road data shown are illustrative, not live conditions.'); });
+$('#swapRoute').addEventListener('click', () => { const a = $('#routeStart'), b = $('#routeEnd'), v = a.value; a.value = b.value; b.value = v }); $('#fitMap').addEventListener('click', () => { if (map) { if (routeSubmitted) drawMap(); else map.setView([27.105, 93.72], 11) } });
+$('#reportForm').addEventListener('submit', e => { e.preventDefault(); const editId = e.currentTarget.dataset.editId; const data = { title: $('#incidentType').value === 'Landslide' ? 'Landslide / rockfall' : $('#incidentType').value, type: $('#incidentType').value, location: $('#incidentLocation').value.trim(), description: $('#incidentDescription').value.trim(), severity: $('#incidentSeverity').value, lat: pendingGeo?.lat || 27.105 + (Math.random() - .5) * .035, lng: pendingGeo?.lng || 93.72 + (Math.random() - .5) * .05, photoName }; if (editId) { const r = state.reports.find(x => x.id === editId); if (r && r.reporterId === currentUser.id) { Object.assign(r, data, { updatedAt: Date.now() }); delete e.currentTarget.dataset.editId; $('#reportForm button[type="submit"]').innerHTML = 'Submit report <span>→</span>'; toast('Report updated.'); } } else { createReport(data); toast(navigator.onLine ? 'Report saved to this browser prototype.' : 'Report saved locally and marked pending sync.'); } e.currentTarget.reset(); pendingGeo = null; photoName = ''; $('#locationStatus').textContent = 'Optional · browser permission required'; $('#photoPreview').classList.add('hidden'); renderAll(); if (map) drawMap(); showView('myreports'); });
+$('#useLocation').addEventListener('click', () => { if (!navigator.geolocation) { toast('Location is not available in this browser.', 'error'); return } $('#locationStatus').textContent = 'Requesting permission…'; navigator.geolocation.getCurrentPosition(pos => { pendingGeo = { lat: pos.coords.latitude, lng: pos.coords.longitude }; $('#incidentLocation').value = `My current location (${pendingGeo.lat.toFixed(5)}, ${pendingGeo.lng.toFixed(5)})`; $('#locationStatus').textContent = 'Location captured for this report'; toast('Location added.'); }, () => { $('#locationStatus').textContent = 'Could not access location. You can enter it manually.'; toast('Location permission was not granted.', 'error'); }, { enableHighAccuracy: true, timeout: 8000 }); });
+$('#incidentPhoto').addEventListener('change', e => { const f = e.target.files[0]; if (!f) return; photoName = f.name; $('#photoPreview').textContent = `Selected photo: ${f.name} (prototype stores the filename only)`; $('#photoPreview').classList.remove('hidden') });
+$$('[data-filter]').forEach(b => b.addEventListener('click', () => { currentFilter = b.dataset.filter; $$('[data-filter]').forEach(x => x.classList.toggle('active', x === b)); renderReports() }));
+document.addEventListener('click', e => { const b = e.target.closest('[data-action]'); if (b) doAction(b.dataset.action, b.dataset.id) });
+$('#closeModal').addEventListener('click', () => $('#incidentModal').classList.add('hidden')); $('#incidentModal').addEventListener('click', e => { if (e.target === $('#incidentModal')) $('#incidentModal').classList.add('hidden') });
+$('#simulateOnline').addEventListener('click', () => { if (!navigator.onLine) { toast('Your browser is still offline. Reconnect to the internet first.', 'error'); return } const n = state.pendingSync.length; state.pendingSync = []; saveState(); updateCounts(); toast(n ? `${n} pending report(s) marked ready to sync in this prototype.` : 'No pending reports to sync.'); });
+window.addEventListener('online', () => { showToastForOffline(); toast('Connection restored. Pending items can now sync when Firebase is connected.') }); window.addEventListener('offline', () => { showToastForOffline(); toast('You are offline. New reports will be marked pending sync.', 'error') });
 // Demo-only moderator switch: use the profile button with Alt-click to preview moderation UI. Never use this as real authorization.
-$('#profileButton').addEventListener('click',e=>{if(e.altKey){currentUser.authorised=!currentUser.authorised;$('#adminNav').classList.toggle('hidden',!currentUser.authorised);toast(currentUser.authorised?'Demo moderator view enabled. This is not secure authorization.':'Demo moderator view disabled.');renderAdmin()}});
+$('#profileButton').addEventListener('click', e => { if (e.altKey) { currentUser.authorised = !currentUser.authorised; $('#adminNav').classList.toggle('hidden', !currentUser.authorised); toast(currentUser.authorised ? 'Demo moderator view enabled. This is not secure authorization.' : 'Demo moderator view disabled.'); renderAdmin() } });
 showToastForOffline();
